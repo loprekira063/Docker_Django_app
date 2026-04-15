@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Django → Docker → EC2 Deploy Flow</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;700&family=Syne:wght@400;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0e14;
+    --surface: #111820;
+    --border: #1e2d3d;
+    --green: #39d353;
+    --cyan: #00d4ff;
+    --orange: #ff8c42;
+    --purple: #c084fc;
+    --yellow: #fbbf24;
+    --text: #cdd9e5;
+    --muted: #4a5568;
+    --card-bg: #0d1520;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'JetBrains Mono', monospace;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(0,212,255,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,212,255,0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .container {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: clamp(20px, 5vw, 60px) clamp(16px, 4vw, 40px);
+    position: relative;
+    z-index: 1;
+  }
+
+  header {
+    text-align: center;
+    margin-bottom: 60px;
+    animation: fadeDown 0.8s ease both;
+  }
+
+  .badge {
+    display: inline-block;
+    background: rgba(57,211,83,0.1);
+    border: 1px solid rgba(57,211,83,0.3);
+    color: var(--green);
+    font-size: 11px;
+    letter-spacing: 2px;
+    padding: 5px 14px;
+    border-radius: 20px;
+    margin-bottom: 20px;
+    text-transform: uppercase;
+  }
+
+  h1 {
+    font-family: 'Syne', sans-serif;
+    font-size: clamp(28px, 5vw, 52px);
+    font-weight: 800;
+    line-height: 1.1;
+    margin-bottom: 16px;
+    color: #fff;
+  }
+
+  .subtitle {
+    font-size: 13px;
+    color: var(--muted);
+    line-height: 1.7;
+    max-width: 500px;
+    margin: 0 auto;
+  }
+
+  .meta-banner {
+    background: linear-gradient(135deg, rgba(0,212,255,0.06), rgba(57,211,83,0.06));
+    border: 1px solid rgba(0,212,255,0.2);
+    border-radius: 12px;
+    padding: 16px 22px;
+    margin-bottom: 50px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    animation: fadeUp 0.8s 0.2s ease both;
+  }
+
+  .meta-banner .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    flex-shrink: 0;
+    animation: pulse 2s infinite;
+  }
+
+  .meta-banner p { font-size: 12px; color: #8badc7; line-height: 1.6; }
+  .meta-banner strong { color: var(--cyan); }
+
+  .flow-section { margin-bottom: 60px; animation: fadeUp 0.8s 0.3s ease both; }
+
+  .section-label {
+    font-size: 10px; letter-spacing: 3px; color: var(--muted);
+    text-transform: uppercase; margin-bottom: 24px;
+  }
+
+  .flow-track {
+    display: flex; align-items: center; gap: 0;
+    overflow-x: auto; padding-bottom: 8px; scrollbar-width: none;
+  }
+  .flow-track::-webkit-scrollbar { display: none; }
+
+  .flow-node {
+    flex-shrink: 0;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 20px;
+    cursor: pointer;
+    transition: all 0.25s ease;
+    text-align: center;
+    min-width: 120px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .flow-node::before {
+    content: ''; position: absolute; inset: 0;
+    background: var(--node-glow, transparent);
+    opacity: 0; transition: opacity 0.3s;
+  }
+
+  .flow-node:hover::before, .flow-node.active::before { opacity: 1; }
+
+  .flow-node:hover, .flow-node.active {
+    border-color: var(--node-color);
+    transform: translateY(-4px);
+    box-shadow: 0 8px 30px var(--node-shadow);
+  }
+
+  .flow-node .icon { font-size: 28px; margin-bottom: 8px; display: block; position: relative; z-index: 1; }
+  .flow-node .node-name { font-size: 11px; font-weight: 600; letter-spacing: 1px; color: var(--node-color); position: relative; z-index: 1; }
+  .flow-node .node-sub { font-size: 9px; color: var(--muted); margin-top: 3px; position: relative; z-index: 1; }
+
+  .flow-arrow {
+    flex-shrink: 0; padding: 0 10px;
+    color: var(--muted); font-size: 16px;
+  }
+
+  .detail-panel {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: clamp(20px, 4vw, 36px);
+    margin-bottom: 50px;
+    min-height: 200px;
+    transition: all 0.3s ease;
+    animation: fadeUp 0.8s 0.4s ease both;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .detail-panel::before {
+    content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+    background: var(--panel-accent, var(--border)); transition: background 0.3s;
+  }
+
+  .panel-placeholder {
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    height: 180px; color: var(--muted);
+    font-size: 12px; gap: 12px; text-align: center;
+  }
+
+  .panel-placeholder .arrow-hint { font-size: 22px; animation: bounce 1.5s infinite; }
+
+  .panel-content { display: none; }
+  .panel-content.visible { display: block; }
+
+  .panel-header { display: flex; align-items: center; gap: 14px; margin-bottom: 20px; }
+  .panel-icon { font-size: 36px; }
+
+  .panel-title {
+    font-family: 'Syne', sans-serif;
+    font-size: clamp(18px, 3vw, 26px);
+    font-weight: 800;
+    color: var(--panel-color, #fff);
+  }
+
+  .panel-role { font-size: 10px; letter-spacing: 2px; color: var(--muted); text-transform: uppercase; margin-top: 2px; }
+  .panel-desc { font-size: 12px; color: #8badc7; line-height: 1.8; margin-bottom: 20px; }
+
+  .code-block {
+    background: #060b10;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin: 12px 0;
+  }
+
+  .code-block .cb-label { font-size: 9px; letter-spacing: 2px; color: var(--muted); text-transform: uppercase; margin-bottom: 10px; }
+  .code-block pre { font-size: 11px; line-height: 1.7; overflow-x: auto; white-space: pre; }
+
+  .c-green { color: var(--green); }
+  .c-cyan { color: var(--cyan); }
+  .c-orange { color: var(--orange); }
+  .c-purple { color: var(--purple); }
+  .c-yellow { color: var(--yellow); }
+  .c-muted { color: var(--muted); }
+  .c-white { color: #fff; }
+
+  .tag-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+  .tag { font-size: 10px; padding: 4px 10px; border-radius: 20px; border: 1px solid; letter-spacing: 0.5px; }
+
+  .steps-section { animation: fadeUp 0.8s 0.5s ease both; margin-bottom: 60px; }
+
+  .steps-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 16px; margin-top: 24px;
+  }
+
+  .step-card {
+    background: var(--card-bg); border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px;
+    cursor: pointer; transition: all 0.25s; position: relative;
+  }
+
+  .step-card:hover { border-color: rgba(0,212,255,0.3); transform: translateY(-2px); }
+
+  .step-num { font-family: 'Syne', sans-serif; font-size: 36px; font-weight: 800; color: rgba(0,212,255,0.1); line-height: 1; margin-bottom: 8px; }
+  .step-title { font-size: 12px; font-weight: 600; color: var(--cyan); margin-bottom: 8px; letter-spacing: 0.5px; }
+  .step-text { font-size: 11px; color: var(--muted); line-height: 1.7; }
+
+  .step-code {
+    margin-top: 12px; background: #060b10; border-radius: 8px;
+    padding: 10px 12px; font-size: 10px; line-height: 1.9;
+    display: none; border: 1px solid var(--border);
+  }
+
+  .step-card.expanded .step-code { display: block; }
+  .step-card.expanded { border-color: rgba(0,212,255,0.3); }
+
+  .expand-hint { position: absolute; top: 16px; right: 16px; font-size: 10px; color: var(--muted); transition: transform 0.25s; }
+  .step-card.expanded .expand-hint { transform: rotate(180deg); }
+
+  footer { border-top: 1px solid var(--border); padding-top: 30px; margin-top: 40px; text-align: center; animation: fadeUp 0.8s 0.6s ease both; }
+
+  .footer-meta {
+    background: linear-gradient(135deg, rgba(57,211,83,0.05), rgba(0,212,255,0.05));
+    border: 1px solid rgba(57,211,83,0.15);
+    border-radius: 12px; padding: 20px 24px; margin-bottom: 20px;
+  }
+
+  .footer-meta p { font-size: 11px; color: #8badc7; line-height: 1.8; }
+  .footer-meta strong { color: var(--green); }
+  .footer-tag { font-size: 10px; color: var(--muted); letter-spacing: 1px; }
+
+  @keyframes fadeDown { from { opacity: 0; transform: translateY(-20px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes pulse { 0%,100% { opacity:1; box-shadow:0 0 0 0 rgba(57,211,83,0.4); } 50% { opacity:0.7; box-shadow:0 0 0 6px rgba(57,211,83,0); } }
+  @keyframes bounce { 0%,100% { transform:translateY(0); } 50% { transform:translateY(-6px); } }
+
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+</style>
+</head>
+<body>
+
+<div class="container">
+
+  <header>
+    <div class="badge">⚙ deployment flow</div>
+    <h1>
+      <span style="color:var(--green)">Django</span> →
+      <span style="color:var(--cyan)">Docker</span> →
+      <span style="color:var(--orange)">EC2</span>
+    </h1>
+    <p class="subtitle">An interactive guide to containerized deployment. Click each component below to understand what it does and why it matters.</p>
+  </header>
+
+  <div class="meta-banner">
+    <div class="dot"></div>
+    <p>🚀 <strong>This very website</strong> was built as a demo that can be deployed using the exact process described here — Dockerized, pushed to GitHub, and served from an EC2 instance. What you're reading <em>is</em> the deployed artifact.</p>
+  </div>
+
+  <div class="flow-section">
+    <div class="section-label">// click any node to explore</div>
+    <div class="flow-track">
+
+      <div class="flow-node" id="node-django"
+        style="--node-color:#39d353;--node-glow:linear-gradient(135deg,rgba(57,211,83,0.08),transparent);--node-shadow:rgba(57,211,83,0.2)"
+        onclick="showPanel('django')">
+        <span class="icon">🐍</span>
+        <div class="node-name">Django</div>
+        <div class="node-sub">Your App</div>
+      </div>
+
+      <div class="flow-arrow">→</div>
+
+      <div class="flow-node" id="node-docker"
+        style="--node-color:#00d4ff;--node-glow:linear-gradient(135deg,rgba(0,212,255,0.08),transparent);--node-shadow:rgba(0,212,255,0.2)"
+        onclick="showPanel('docker')">
+        <span class="icon">🐳</span>
+        <div class="node-name">Docker</div>
+        <div class="node-sub">Container</div>
+      </div>
+
+      <div class="flow-arrow">→</div>
+
+      <div class="flow-node" id="node-github"
+        style="--node-color:#c084fc;--node-glow:linear-gradient(135deg,rgba(192,132,252,0.08),transparent);--node-shadow:rgba(192,132,252,0.2)"
+        onclick="showPanel('github')">
+        <span class="icon">🐙</span>
+        <div class="node-name">GitHub</div>
+        <div class="node-sub">Source</div>
+      </div>
+
+      <div class="flow-arrow">→</div>
+
+      <div class="flow-node" id="node-ec2"
+        style="--node-color:#ff8c42;--node-glow:linear-gradient(135deg,rgba(255,140,66,0.08),transparent);--node-shadow:rgba(255,140,66,0.2)"
+        onclick="showPanel('ec2')">
+        <span class="icon">☁️</span>
+        <div class="node-name">EC2</div>
+        <div class="node-sub">Live Server</div>
+      </div>
+
+      <div class="flow-arrow">→</div>
+
+      <div class="flow-node" id="node-live"
+        style="--node-color:#fbbf24;--node-glow:linear-gradient(135deg,rgba(251,191,36,0.08),transparent);--node-shadow:rgba(251,191,36,0.2)"
+        onclick="showPanel('live')">
+        <span class="icon">🌐</span>
+        <div class="node-name">Live</div>
+        <div class="node-sub">World sees it</div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- DETAIL PANEL -->
+  <div class="detail-panel" id="detail-panel">
+    <div class="panel-placeholder" id="placeholder">
+      <span class="arrow-hint">👆</span>
+      <span>Click any component above to see what it does</span>
+    </div>
+
+    <!-- DJANGO -->
+    <div class="panel-content" id="panel-django">
+      <div class="panel-header">
+        <span class="panel-icon">🐍</span>
+        <div>
+          <div class="panel-title" style="color:var(--green)">Django</div>
+          <div class="panel-role">Your Web Application</div>
+        </div>
+      </div>
+      <p class="panel-desc">Django is a Python web framework that handles your business logic, database, URLs, and HTML templates. It's the actual product — the thing users interact with. Think of it as the "engine" of your app.</p>
+      <div class="code-block">
+        <div class="cb-label">// project structure</div>
+        <pre><span class="c-cyan">myproject/</span>
+├── <span class="c-green">manage.py</span>         <span class="c-muted"># run commands</span>
+├── <span class="c-green">requirements.txt</span>  <span class="c-muted"># python deps</span>
+├── <span class="c-orange">myproject/</span>
+│   ├── <span class="c-white">settings.py</span>   <span class="c-muted"># config</span>
+│   └── <span class="c-white">wsgi.py</span>       <span class="c-muted"># server entry</span>
+└── <span class="c-orange">myapp/</span>
+    ├── <span class="c-white">views.py</span>      <span class="c-muted"># logic</span>
+    └── <span class="c-white">urls.py</span>       <span class="c-muted"># routes</span></pre>
+      </div>
+      <div class="tag-list">
+        <span class="tag" style="color:var(--green);border-color:rgba(57,211,83,0.3)">Python</span>
+        <span class="tag" style="color:var(--green);border-color:rgba(57,211,83,0.3)">ORM for database</span>
+        <span class="tag" style="color:var(--green);border-color:rgba(57,211,83,0.3)">Gunicorn = WSGI server</span>
+      </div>
+    </div>
+
+    <!-- DOCKER -->
+    <div class="panel-content" id="panel-docker">
+      <div class="panel-header">
+        <span class="panel-icon">🐳</span>
+        <div>
+          <div class="panel-title" style="color:var(--cyan)">Docker</div>
+          <div class="panel-role">Container = Packaged App</div>
+        </div>
+      </div>
+      <p class="panel-desc">Docker wraps your Django app + Python + all dependencies into a single portable <strong style="color:var(--cyan)">image</strong>. It solves the classic "works on my machine" problem — if it runs in Docker locally, it runs identically on EC2.</p>
+      <div class="code-block">
+        <div class="cb-label">// Dockerfile</div>
+        <pre><span class="c-purple">FROM</span> <span class="c-cyan">python:3.11-slim</span>
+
+<span class="c-purple">WORKDIR</span> <span class="c-white">/app</span>
+
+<span class="c-purple">COPY</span> <span class="c-white">requirements.txt .</span>
+<span class="c-purple">RUN</span> <span class="c-green">pip install -r requirements.txt</span>
+
+<span class="c-purple">COPY</span> <span class="c-white">. .</span>
+
+<span class="c-purple">EXPOSE</span> <span class="c-orange">8000</span>
+
+<span class="c-purple">CMD</span> <span class="c-yellow">["gunicorn", "myproject.wsgi:application",
+     "--bind", "0.0.0.0:8000"]</span></pre>
+      </div>
+      <div class="tag-list">
+        <span class="tag" style="color:var(--cyan);border-color:rgba(0,212,255,0.3)">docker build -t myapp .</span>
+        <span class="tag" style="color:var(--cyan);border-color:rgba(0,212,255,0.3)">docker run -p 8000:8000 myapp</span>
+      </div>
+    </div>
+
+    <!-- GITHUB -->
+    <div class="panel-content" id="panel-github">
+      <div class="panel-header">
+        <span class="panel-icon">🐙</span>
+        <div>
+          <div class="panel-title" style="color:var(--purple)">GitHub</div>
+          <div class="panel-role">Source of Truth</div>
+        </div>
+      </div>
+      <p class="panel-desc">GitHub stores your code and Dockerfile. Your EC2 server will <code style="color:var(--purple)">git clone</code> or <code style="color:var(--purple)">git pull</code> from here to get the latest version of your app. It acts as the bridge between your laptop and the server.</p>
+      <div class="code-block">
+        <div class="cb-label">// push code from laptop / pull on server</div>
+        <pre><span class="c-muted"># on your laptop</span>
+<span class="c-green">git add .</span>
+<span class="c-green">git commit -m "add dockerfile"</span>
+<span class="c-green">git push origin main</span>
+
+<span class="c-muted"># on EC2 server</span>
+<span class="c-cyan">git clone https://github.com/you/repo</span>
+<span class="c-muted"># or to update later:</span>
+<span class="c-cyan">git pull origin main</span></pre>
+      </div>
+      <div class="tag-list">
+        <span class="tag" style="color:var(--purple);border-color:rgba(192,132,252,0.3)">Version control</span>
+        <span class="tag" style="color:var(--purple);border-color:rgba(192,132,252,0.3)">Free code hosting</span>
+        <span class="tag" style="color:var(--purple);border-color:rgba(192,132,252,0.3)">CI/CD ready later</span>
+      </div>
+    </div>
+
+    <!-- EC2 -->
+    <div class="panel-content" id="panel-ec2">
+      <div class="panel-header">
+        <span class="panel-icon">☁️</span>
+        <div>
+          <div class="panel-title" style="color:var(--orange)">AWS EC2</div>
+          <div class="panel-role">Your Server in the Cloud</div>
+        </div>
+      </div>
+      <p class="panel-desc">EC2 is a virtual machine rented from Amazon. It runs 24/7 with a public IP. You SSH into it, install Docker, pull your code from GitHub, build the image, and run the container — your app is now globally accessible.</p>
+      <div class="code-block">
+        <div class="cb-label">// ec2 setup commands</div>
+        <pre><span class="c-muted"># SSH into your instance</span>
+<span class="c-green">ssh -i key.pem ubuntu@&lt;your-ec2-ip&gt;</span>
+
+<span class="c-muted"># install docker + git</span>
+<span class="c-cyan">sudo apt update && sudo apt install -y docker.io git</span>
+<span class="c-cyan">sudo systemctl enable docker</span>
+<span class="c-cyan">sudo usermod -aG docker ubuntu</span>
+
+<span class="c-muted"># clone, build, run</span>
+<span class="c-orange">git clone https://github.com/you/repo && cd repo</span>
+<span class="c-orange">docker build -t myapp .</span>
+<span class="c-orange">docker run -d -p 8000:8000 myapp</span></pre>
+      </div>
+      <div class="tag-list">
+        <span class="tag" style="color:var(--orange);border-color:rgba(255,140,66,0.3)">t2.micro free tier</span>
+        <span class="tag" style="color:var(--orange);border-color:rgba(255,140,66,0.3)">Ubuntu 22.04</span>
+        <span class="tag" style="color:var(--orange);border-color:rgba(255,140,66,0.3)">Port 22 + 8000 in SG</span>
+      </div>
+    </div>
+
+    <!-- LIVE -->
+    <div class="panel-content" id="panel-live">
+      <div class="panel-header">
+        <span class="panel-icon">🌐</span>
+        <div>
+          <div class="panel-title" style="color:var(--yellow)">Live & Accessible</div>
+          <div class="panel-role">The World Can See It</div>
+        </div>
+      </div>
+      <p class="panel-desc">Once Docker runs your container on EC2 with port 8000 exposed, anyone can visit <code style="color:var(--yellow)">http://&lt;ec2-ip&gt;:8000</code> and see your Django app. The container keeps it isolated, reproducible, and easy to update.</p>
+      <div class="code-block">
+        <div class="cb-label">// update flow after code changes</div>
+        <pre><span class="c-muted"># laptop → push</span>
+<span class="c-green">git push origin main</span>
+
+<span class="c-muted"># EC2 → pull + rebuild</span>
+<span class="c-cyan">git pull origin main</span>
+<span class="c-cyan">docker stop myapp-container && docker rm myapp-container</span>
+<span class="c-cyan">docker build -t myapp .</span>
+<span class="c-cyan">docker run -d -p 8000:8000 --name myapp-container myapp</span>
+
+<span class="c-yellow"># visit http://&lt;ec2-ip&gt;:8000 ✅</span></pre>
+      </div>
+      <div class="tag-list">
+        <span class="tag" style="color:var(--yellow);border-color:rgba(251,191,36,0.3)">Next: Nginx reverse proxy</span>
+        <span class="tag" style="color:var(--yellow);border-color:rgba(251,191,36,0.3)">Next: GitHub Actions CI/CD</span>
+        <span class="tag" style="color:var(--yellow);border-color:rgba(251,191,36,0.3)">Next: Docker Compose + Postgres</span>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- STEPS -->
+  <div class="steps-section">
+    <div class="section-label">// step-by-step breakdown — click to expand</div>
+    <div class="steps-grid">
+
+      <div class="step-card" onclick="toggleStep(this)">
+        <div class="expand-hint">▼</div>
+        <div class="step-num">01</div>
+        <div class="step-title">Write Your Django App</div>
+        <div class="step-text">Create your project with views, models, URLs. Add <code>requirements.txt</code> with django and gunicorn.</div>
+        <div class="step-code">
+          <span class="c-green">django-admin startproject myproject</span><br>
+          <span class="c-green">cd myproject</span><br>
+          <span class="c-green">python manage.py startapp myapp</span><br>
+          <span class="c-muted"># add gunicorn to requirements.txt</span>
+        </div>
+      </div>
+
+      <div class="step-card" onclick="toggleStep(this)">
+        <div class="expand-hint">▼</div>
+        <div class="step-num">02</div>
+        <div class="step-title">Write the Dockerfile</div>
+        <div class="step-text">Tell Docker how to package your app — base image, install deps, copy code, expose port, run gunicorn.</div>
+        <div class="step-code">
+          <span class="c-purple">FROM</span> python:3.11-slim<br>
+          <span class="c-purple">WORKDIR</span> /app<br>
+          <span class="c-purple">COPY</span> . .<br>
+          <span class="c-purple">RUN</span> pip install -r requirements.txt<br>
+          <span class="c-purple">CMD</span> ["gunicorn", "myproject.wsgi:application", "--bind", "0.0.0.0:8000"]
+        </div>
+      </div>
+
+      <div class="step-card" onclick="toggleStep(this)">
+        <div class="expand-hint">▼</div>
+        <div class="step-num">03</div>
+        <div class="step-title">Push to GitHub</div>
+        <div class="step-text">Initialize a git repo and push everything including the Dockerfile. EC2 will pull from here.</div>
+        <div class="step-code">
+          <span class="c-green">git init && git add .</span><br>
+          <span class="c-green">git commit -m "initial"</span><br>
+          <span class="c-green">git remote add origin &lt;url&gt;</span><br>
+          <span class="c-green">git push -u origin main</span>
+        </div>
+      </div>
+
+      <div class="step-card" onclick="toggleStep(this)">
+        <div class="expand-hint">▼</div>
+        <div class="step-num">04</div>
+        <div class="step-title">Launch EC2 Instance</div>
+        <div class="step-text">Launch Ubuntu t2.micro on AWS. Open ports 22 (SSH) and 8000 in Security Groups. Download your .pem key.</div>
+        <div class="step-code">
+          <span class="c-muted"># AWS Console → EC2 → Launch</span><br>
+          <span class="c-cyan">OS: Ubuntu 22.04 LTS</span><br>
+          <span class="c-cyan">Type: t2.micro (free tier)</span><br>
+          <span class="c-cyan">SG: open port 22, 8000</span>
+        </div>
+      </div>
+
+      <div class="step-card" onclick="toggleStep(this)">
+        <div class="expand-hint">▼</div>
+        <div class="step-num">05</div>
+        <div class="step-title">Install Docker on EC2</div>
+        <div class="step-text">SSH into the server and install Docker + Git. Enable Docker to start on boot automatically.</div>
+        <div class="step-code">
+          <span class="c-green">sudo apt update</span><br>
+          <span class="c-green">sudo apt install -y docker.io git</span><br>
+          <span class="c-green">sudo systemctl enable docker</span><br>
+          <span class="c-green">sudo usermod -aG docker ubuntu</span>
+        </div>
+      </div>
+
+      <div class="step-card" onclick="toggleStep(this)">
+        <div class="expand-hint">▼</div>
+        <div class="step-num">06</div>
+        <div class="step-title">Build & Run the Container</div>
+        <div class="step-text">Clone your repo on EC2, build the Docker image from the Dockerfile, then run it. App is live!</div>
+        <div class="step-code">
+          <span class="c-orange">git clone &lt;your-github-url&gt;</span><br>
+          <span class="c-orange">cd myproject</span><br>
+          <span class="c-orange">docker build -t myapp .</span><br>
+          <span class="c-orange">docker run -d -p 8000:8000 myapp</span><br>
+          <span class="c-yellow"># visit http://&lt;ec2-ip&gt;:8000 ✅</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <footer>
+    <div class="footer-meta">
+      <p>
+        🎯 <strong>Meta moment:</strong> This webpage you're reading is a static HTML file sitting inside a Django project.
+        It's wrapped in a Dockerfile, pushed to GitHub, and when you run it on EC2 —
+        <strong>this is exactly what your users see</strong>.
+        The process described on this page <em>is</em> the process that deployed it.
+      </p>
+    </div>
+    <p class="footer-tag">Django → Docker → GitHub → EC2 → 🌐 You're here</p>
+  </footer>
+
+</div>
+
+<script>
+  const panels = ['django','docker','github','ec2','live'];
+  const colors = {
+    django: 'var(--green)',
+    docker: 'var(--cyan)',
+    github: 'var(--purple)',
+    ec2: 'var(--orange)',
+    live: 'var(--yellow)'
+  };
+
+  function showPanel(id) {
+    document.getElementById('placeholder').style.display = 'none';
+    panels.forEach(p => {
+      document.getElementById('panel-' + p).classList.remove('visible');
+      document.getElementById('node-' + p).classList.remove('active');
+    });
+    document.getElementById('panel-' + id).classList.add('visible');
+    document.getElementById('node-' + id).classList.add('active');
+    document.getElementById('detail-panel').style.setProperty('--panel-accent', colors[id]);
+    document.getElementById('detail-panel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  function toggleStep(el) {
+    el.classList.toggle('expanded');
+  }
+</script>
+</body>
+</html>
